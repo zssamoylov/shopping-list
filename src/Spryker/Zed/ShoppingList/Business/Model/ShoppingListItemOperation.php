@@ -8,6 +8,7 @@
 namespace Spryker\Zed\ShoppingList\Business\Model;
 
 use Generated\Shared\Transfer\MessageTransfer;
+use Generated\Shared\Transfer\ShoppingListAddItemsRequestTransfer;
 use Generated\Shared\Transfer\ShoppingListItemResponseTransfer;
 use Generated\Shared\Transfer\ShoppingListItemTransfer;
 use Generated\Shared\Transfer\ShoppingListPreAddItemCheckResponseTransfer;
@@ -22,9 +23,8 @@ use Spryker\Zed\ShoppingList\Persistence\ShoppingListRepositoryInterface;
 
 class ShoppingListItemOperation implements ShoppingListItemOperationInterface
 {
-    use TransactionTrait;
-
     use PermissionAwareTrait;
+    use TransactionTrait;
 
     protected const GLOSSARY_PARAM_SKU = '%sku%';
     protected const GLOSSARY_KEY_CUSTOMER_ACCOUNT_SHOPPING_LIST_ITEM_ADD_SUCCESS = 'customer.account.shopping_list.item.add.success';
@@ -100,15 +100,80 @@ class ShoppingListItemOperation implements ShoppingListItemOperationInterface
         $shoppingListItemTransfer->setFkShoppingList($shoppingListTransfer->getIdShoppingList());
 
         $shoppingListItemTransfer = $this->saveShoppingListItem($shoppingListItemTransfer);
-        if (!$shoppingListItemTransfer->getIdShoppingListItem()) {
-            $this->messengerFacade->addSuccessMessage(
-                (new MessageTransfer())
-                    ->setValue(static::GLOSSARY_KEY_CUSTOMER_ACCOUNT_SHOPPING_LIST_ITEM_ADD_SUCCESS)
-                    ->setParameters([static::GLOSSARY_PARAM_SKU => $shoppingListItemTransfer->getSku()])
-            );
+        if ($shoppingListItemTransfer->getIdShoppingListItem()) {
+            $this->addItemAddSuccessMessage($shoppingListItemTransfer->getSku());
         }
 
         return $shoppingListItemTransfer;
+    }
+
+    /**
+     * @param \Generated\Shared\Transfer\ShoppingListAddItemsRequestTransfer $shoppingListAddItemsRequestTransfer
+     *
+     * @return \Generated\Shared\Transfer\ShoppingListResponseTransfer
+     */
+    public function addItems(ShoppingListAddItemsRequestTransfer $shoppingListAddItemsRequestTransfer): ShoppingListResponseTransfer
+    {
+        $customerTransfer = $shoppingListAddItemsRequestTransfer
+            ->requireCustomer()
+            ->getCustomer();
+        $customerTransfer->requireCompanyUserTransfer()
+            ->requireCustomerReference();
+
+        return $this->getTransactionHandler()->handleTransaction(function () use ($shoppingListAddItemsRequestTransfer) {
+            return $this->executeAddItemsTransaction($shoppingListAddItemsRequestTransfer);
+        });
+    }
+
+    /**
+     * @param \Generated\Shared\Transfer\ShoppingListAddItemsRequestTransfer $shoppingListAddItemsRequestTransfer
+     *
+     * @return \Generated\Shared\Transfer\ShoppingListResponseTransfer
+     */
+    protected function executeAddItemsTransaction(ShoppingListAddItemsRequestTransfer $shoppingListAddItemsRequestTransfer): ShoppingListResponseTransfer
+    {
+        $customerTransfer = $shoppingListAddItemsRequestTransfer->getCustomer();
+        $shoppingListTransfer = (new ShoppingListTransfer())
+            ->setIdShoppingList($shoppingListAddItemsRequestTransfer->getShoppingListId())
+            ->setIdCompanyUser($customerTransfer->getCompanyUserTransfer()->getIdCompanyUser())
+            ->setCustomerReference($customerTransfer->getCustomerReference());
+        $shoppingListTransfer = $this->resolveShoppingList($shoppingListTransfer);
+        if (!$this->checkWritePermission($shoppingListTransfer)) {
+            return (new ShoppingListResponseTransfer())
+                ->setIsSuccess(false);
+        }
+
+        return $this->createItems($shoppingListTransfer, $shoppingListAddItemsRequestTransfer);
+    }
+
+    /**
+     * @param \Generated\Shared\Transfer\ShoppingListTransfer $shoppingListTransfer
+     * @param \Generated\Shared\Transfer\ShoppingListAddItemsRequestTransfer $shoppingListAddItemsRequestTransfer
+     *
+     * @return \Generated\Shared\Transfer\ShoppingListResponseTransfer
+     */
+    protected function createItems(ShoppingListTransfer $shoppingListTransfer, ShoppingListAddItemsRequestTransfer $shoppingListAddItemsRequestTransfer): ShoppingListResponseTransfer
+    {
+        $shoppingListResponseTransfer = (new ShoppingListResponseTransfer())
+            ->setShoppingList($shoppingListTransfer)
+            ->setIsSuccess(true);
+        foreach ($shoppingListAddItemsRequestTransfer->getItems() as $shoppingListItemTransfer) {
+            if (!$this->assertItem($shoppingListItemTransfer)) {
+                $shoppingListResponseTransfer->setIsSuccess(false);
+                continue;
+            }
+            $shoppingListItemTransfer->setFkShoppingList($shoppingListTransfer->getIdShoppingList());
+            $shoppingListItemTransfer = $this->shoppingListEntityManager->saveShoppingListItem($shoppingListItemTransfer);
+            if (!$shoppingListItemTransfer->getIdShoppingListItem()) {
+                $shoppingListResponseTransfer->setIsSuccess(false);
+                $this->addItemAddFailedMessage($shoppingListItemTransfer->getSku());
+                continue;
+            }
+
+            $this->addItemAddSuccessMessage($shoppingListItemTransfer->getSku());
+        }
+
+        return $shoppingListResponseTransfer;
     }
 
     /**
@@ -169,7 +234,9 @@ class ShoppingListItemOperation implements ShoppingListItemOperationInterface
             return (new ShoppingListItemResponseTransfer())->setIsSuccess(false);
         }
 
-        return $this->deleteShoppingListItem($shoppingListItemTransfer);
+        $this->shoppingListEntityManager->deleteShoppingListItem($shoppingListItemTransfer->getIdShoppingListItem());
+
+        return (new ShoppingListItemResponseTransfer())->setIsSuccess(true);
     }
 
     /**
@@ -186,7 +253,7 @@ class ShoppingListItemOperation implements ShoppingListItemOperationInterface
             return $shoppingListItemTransfer;
         }
 
-        return $this->createOrUpdateShoppingListItem($shoppingListItemTransfer);
+        return $this->shoppingListEntityManager->saveShoppingListItem($shoppingListItemTransfer);
     }
 
     /**
@@ -196,21 +263,11 @@ class ShoppingListItemOperation implements ShoppingListItemOperationInterface
      */
     public function saveShoppingListItemWithoutPermissionsCheck(ShoppingListItemTransfer $shoppingListItemTransfer): ShoppingListItemTransfer
     {
-        return $this->createOrUpdateShoppingListItem($shoppingListItemTransfer);
+        return return $this->shoppingListEntityManager->saveShoppingListItem($shoppingListItemTransfer);
     }
 
     /**
-     * @param \Generated\Shared\Transfer\ShoppingListItemTransfer $shoppingListItemTransfer
-     *
-     * @return \Generated\Shared\Transfer\ShoppingListItemTransfer
-     */
-    protected function createOrUpdateShoppingListItem(ShoppingListItemTransfer $shoppingListItemTransfer): ShoppingListItemTransfer
-    {
-        return $this->shoppingListEntityManager->saveShoppingListItem($shoppingListItemTransfer);
-    }
-
-    /**
-     * @param \Generated\Shared\Transfer\ShoppingListItemTransfer $shoppingListItemTransfer
+     * @param \Generated\Shared\createOrUpdateShoppingListItemcreateOrUpdateShoppingListItemTransfer\ShoppingListItemTransfer $shoppingListItemTransfer
      *
      * @return bool
      */
@@ -220,11 +277,7 @@ class ShoppingListItemOperation implements ShoppingListItemOperationInterface
         $shoppingListItemTransfer->requireQuantity();
 
         if (!$this->productFacade->hasProductConcrete($shoppingListItemTransfer->getSku())) {
-            $this->messengerFacade->addErrorMessage(
-                (new MessageTransfer())
-                    ->setValue(static::GLOSSARY_KEY_CUSTOMER_ACCOUNT_SHOPPING_LIST_ITEM_ADD_FAILED)
-                    ->setParameters([static::GLOSSARY_PARAM_SKU => $shoppingListItemTransfer->getSku()])
-            );
+            $this->addItemAddFailedMessage($shoppingListItemTransfer->getSku());
 
             return false;
         }
@@ -312,5 +365,33 @@ class ShoppingListItemOperation implements ShoppingListItemOperationInterface
         foreach ($shoppingListPreAddItemCheckResponseTransfer->getMessages() as $messageTransfer) {
             $this->messengerFacade->addErrorMessage($messageTransfer);
         }
+    }
+
+    /**
+     * @param string $sku
+     *
+     * @return void
+     */
+    protected function addItemAddFailedMessage(string $sku): void
+    {
+        $this->messengerFacade->addErrorMessage(
+            (new MessageTransfer())
+                ->setValue(static::GLOSSARY_KEY_CUSTOMER_ACCOUNT_SHOPPING_LIST_ITEM_ADD_FAILED)
+                ->setParameters([static::GLOSSARY_PARAM_SKU => $sku])
+        );
+    }
+
+    /**
+     * @param string $sku
+     *
+     * @return void
+     */
+    protected function addItemAddSuccessMessage(string $sku): void
+    {
+        $this->messengerFacade->addSuccessMessage(
+            (new MessageTransfer())
+                ->setValue(static::GLOSSARY_KEY_CUSTOMER_ACCOUNT_SHOPPING_LIST_ITEM_ADD_SUCCESS)
+                ->setParameters([static::GLOSSARY_PARAM_SKU => $sku])
+        );
     }
 }
