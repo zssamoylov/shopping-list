@@ -263,11 +263,12 @@ class ShoppingListItemOperation implements ShoppingListItemOperationInterface
      */
     public function saveShoppingListItemWithoutPermissionsCheck(ShoppingListItemTransfer $shoppingListItemTransfer): ShoppingListItemTransfer
     {
-        return return $this->shoppingListEntityManager->saveShoppingListItem($shoppingListItemTransfer);
+        return $this->shoppingListEntityManager->saveShoppingListItem($shoppingListItemTransfer);
     }
 
     /**
-     * @param \Generated\Shared\createOrUpdateShoppingListItemcreateOrUpdateShoppingListItemTransfer\ShoppingListItemTransfer $shoppingListItemTransfer
+     *
+     * @param \Generated\Shared\Transfer\ShoppingListItemTransfer $shoppingListItemTransfer
      *
      * @return bool
      */
